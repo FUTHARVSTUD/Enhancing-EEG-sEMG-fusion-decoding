@@ -11,7 +11,7 @@ def main():
     num_classes = 5  
     learning_rate = 0.001
     batch_size = 16
-    num_epochs = 20
+    num_epochs = 100
 
     model = AMPCNet(num_classes)
     criterion = nn.CrossEntropyLoss()

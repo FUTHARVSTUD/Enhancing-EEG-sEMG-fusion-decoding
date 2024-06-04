@@ -152,7 +152,10 @@ class AMPCNet(nn.Module):
 
         att = torch.softmax(att_time + att_freq + att_tf, dim=-1)
 
-        x_tf = x_tf * att  
+        x_tf = x_tf * att
+        x_time = x_time * att
+        x_freq = x_freq * att 
+
 
         x_time = x_time.flatten(start_dim=1)
         x_freq = x_freq.flatten(start_dim=1) 
@@ -163,4 +166,4 @@ class AMPCNet(nn.Module):
         out = self.fc1(concat_features)
         out = self.fc2(out)
         out = nn.Softmax(dim=1)(out)
-        return out 
+        return out
