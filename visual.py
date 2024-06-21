@@ -5,8 +5,8 @@ import bad_eeg_chs from global_defn.py
 #############################################
 
 ################## Customization ##################
-# data_dir = 'D:/Data/MultiEEGEMG_stroke/'
-data_dir = 'E:/masterSJTU/MultiEEGEMG_stroke'
+# data_dir = 'MultiEEGEMG_stroke/'
+data_dir = 'MultiEEGEMG_stroke'
 subj_idx = '50'
 contraction_type = 'iVC'
 session_idx = 's06'
