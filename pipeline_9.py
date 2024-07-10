@@ -431,11 +431,11 @@ def augment(data):
 # # Save the model
 # torch.save(simple_model.state_dict(), 'simple_model.pth')
 file_path = 'P36_EEG_EMG250Hz.csv'
-sampling_rate = 250  # 250 Hz
-trial_duration_sec = 8  # 8 seconds
-break_duration_sec = 3  # 3 seconds
+sampling_rate = 250  
+trial_duration_sec = 8  
+break_duration_sec = 3  
 num_trials = 40
-n_splits = 5  # Number of folds for cross-validation
+n_splits = 5  
 
 trial_duration_samples = trial_duration_sec * sampling_rate
 break_duration_samples = break_duration_sec * sampling_rate
@@ -446,13 +446,13 @@ def extract_trials(data, num_trials, trial_duration_samples, total_samples_per_t
     trials = []
     labels = []
 
-    start_index = data[(data['Trigger'] == 1)].index[0]  # First trigger point
+    start_index = data[(data['Trigger'] == 1)].index[0]  
     for i in range(num_trials):
         trial_start = start_index + i * total_samples_per_trial
         trial_end = trial_start + trial_duration_samples
         trial_data = data.iloc[trial_start:trial_end]
-        trials.append(trial_data.iloc[:, 4:].values)  # Exclude first 4 columns (Time, Trigger, Label, Planning)
-        labels.append(trial_data['Label'].values[0])  # Label is consistent within a trial
+        trials.append(trial_data.iloc[:, 4:].values)  
+        labels.append(trial_data['Label'].values[0])  
 
     return np.array(trials), np.array(labels)
 
