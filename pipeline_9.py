@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import StratifiedKFold
 from sklearn.model_selection import train_test_split
 from scipy.signal import butter, sosfilt, stft
 import pywt
@@ -273,15 +275,167 @@ def augment(data):
     data = scale(data)
     return data
 
-# Load the data
-file_path = 'P36_EEG_EMG250Hz.csv'
-data = pd.read_csv(file_path)
+# # Load the data
+# file_path = 'P36_EEG_EMG250Hz.csv'
+# data = pd.read_csv(file_path)
 
-# Define constants
+# # Define constants
+# sampling_rate = 250  # 250 Hz
+# trial_duration_sec = 8  # 8 seconds
+# break_duration_sec = 3  # 3 seconds
+# num_trials = 40
+# n_splits = 5
+
+# trial_duration_samples = trial_duration_sec * sampling_rate
+# break_duration_samples = break_duration_sec * sampling_rate
+# total_samples_per_trial = trial_duration_samples + break_duration_samples
+
+# # Extract the trials
+# def extract_trials(data, num_trials, trial_duration_samples, total_samples_per_trial):
+#     trials = []
+#     labels = []
+
+#     start_index = data[(data['Trigger'] == 1)].index[0]  # First trigger point
+#     for i in range(num_trials):
+#         trial_start = start_index + i * total_samples_per_trial
+#         trial_end = trial_start + trial_duration_samples
+#         trial_data = data.iloc[trial_start:trial_end]
+#         trials.append(trial_data.iloc[:, 4:].values)  # Exclude first 4 columns (Time, Trigger, Label, Planning)
+#         labels.append(trial_data['Label'].values[0])  # Label is consistent within a trial
+
+#     return np.array(trials), np.array(labels)
+
+# # Extract trials and labels
+# trials, labels = extract_trials(data, num_trials, trial_duration_samples, total_samples_per_trial)
+# labels = labels - 1
+
+# # Apply bandpass filter
+# lowcut = 1.0
+# highcut = 40.0
+# fs = 250  # Sampling frequency
+# trials_filtered = np.array([apply_bandpass_filter(trial, lowcut, highcut, fs) for trial in trials])
+
+# # Determine target shape
+# sample_channel = trials_filtered[0, :, 0]
+# stft_shape = compute_stft(sample_channel).shape
+# cwt_shape = compute_cwt(sample_channel).shape
+
+# target_shape = (max(stft_shape[0], cwt_shape[0]), max(stft_shape[1], cwt_shape[1]))
+
+# # Apply transformations
+# transform_funcs = [compute_stft, compute_cwt]
+# trials_transformed = apply_transforms(trials_filtered, transform_funcs, target_shape)
+
+# # Normalize the data
+# scaler = StandardScaler()
+# trials_reshaped = trials_transformed.reshape(-1, trials_transformed.shape[-1])
+# trials_normalized = scaler.fit_transform(trials_reshaped).reshape(trials_transformed.shape)
+
+# # Split into training, validation, and testing sets
+# X_train, X_temp, y_train, y_temp = train_test_split(trials_normalized, labels, test_size=0.5, random_state=42, stratify=labels)
+# X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp)
+
+# # Save X_test and y_test for testing
+# np.save('X_test.npy', X_test)
+# np.save('y_test.npy', y_test)
+
+# # Custom Dataset class
+# class EEGEMGTransformedDataset(Dataset):
+#     def __init__(self, trials, labels, augment=False):
+#         self.trials = trials
+#         self.labels = labels
+#         self.augment = augment
+
+#     def __len__(self):
+#         return len(self.trials)
+
+#     def __getitem__(self, idx):
+#         trial = self.trials[idx]
+#         label = self.labels[idx]
+#         if self.augment:
+#             trial = augment(trial)
+
+#         return torch.tensor(trial, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
+
+# # Create DataLoader
+# def create_dataloader(trials, labels, batch_size=15, shuffle=True, augment=False):
+#     dataset = EEGEMGTransformedDataset(trials, labels, augment=augment)
+#     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+#     return dataloader
+
+# # Create DataLoaders
+# train_loader = create_dataloader(X_train, y_train, augment=True)
+# val_loader = create_dataloader(X_val, y_val, shuffle=False)
+# test_loader = create_dataloader(X_test, y_test, shuffle=False)
+
+# # Define model, loss, optimizer
+# input_channels = trials_transformed.shape[1]
+# simple_model = SimpleAMPCNet(num_classes=2, input_channels=input_channels, target_shape=target_shape)
+# criterion = nn.CrossEntropyLoss()
+# optimizer = optim.Adam(simple_model.parameters(), lr=0.0007)
+# scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+
+# # Training loop with detailed debugging
+# num_epochs = 20
+# for epoch in range(num_epochs):
+#     simple_model.train()  # Set the model to training mode
+#     running_loss = 0.0
+
+#     for i, (inputs, labels) in enumerate(train_loader):
+#         optimizer.zero_grad()  # Zero the gradients
+
+#         outputs = simple_model(inputs)  # Forward pass
+#         loss = criterion(outputs, labels)  # Compute the loss
+#         print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], Loss: {loss.item()}')
+
+#         loss.backward()  # Backward pass
+
+#         # Gradient clipping
+#         torch.nn.utils.clip_grad_norm_(simple_model.parameters(), max_norm=1.0)
+
+#         # Print gradients for each parameter
+#         for name, param in simple_model.named_parameters():
+#             if param.grad is not None:
+#                 print(f'{name} grad: {param.grad.norm()}')
+#                 print(f'{name} value: {param.data.norm()}')
+#                 if param.grad.norm().item() == 0:
+#                     print(f'Warning: {name} has zero gradient at step {i}')
+
+#         optimizer.step()  # Optimizer step
+
+#         running_loss += loss.item()  # Accumulate the running loss
+
+#     scheduler.step()  # Adjust the learning rate if using a scheduler
+
+#     # Validation
+#     simple_model.eval()  # Set the model to evaluation mode
+#     val_loss = 0.0
+#     correct = 0
+#     total = 0
+
+#     with torch.no_grad():  # Disable gradient computation for validation
+#         for inputs, labels in val_loader:
+#             outputs = simple_model(inputs)  # Forward pass
+#             loss = criterion(outputs, labels)  # Compute the loss
+#             val_loss += loss.item()  # Accumulate the validation loss
+
+#             _, predicted = torch.max(outputs.data, 1)  # Get the predicted class
+#             total += labels.size(0)  # Update the total number of samples
+#             correct += (predicted == labels).sum().item()  # Update the number of correct predictions
+
+#     print(f'Epoch [{epoch+1}/{num_epochs}], '
+#           f'Train Loss: {running_loss/len(train_loader):.4f}, '
+#           f'Val Loss: {val_loss/len(val_loader):.4f}, '
+#           f'Val Accuracy: {100 * correct / total:.2f}%')
+
+# # Save the model
+# torch.save(simple_model.state_dict(), 'simple_model.pth')
+file_path = 'P36_EEG_EMG250Hz.csv'
 sampling_rate = 250  # 250 Hz
 trial_duration_sec = 8  # 8 seconds
 break_duration_sec = 3  # 3 seconds
 num_trials = 40
+n_splits = 5  # Number of folds for cross-validation
 
 trial_duration_samples = trial_duration_sec * sampling_rate
 break_duration_samples = break_duration_sec * sampling_rate
@@ -303,6 +457,7 @@ def extract_trials(data, num_trials, trial_duration_samples, total_samples_per_t
     return np.array(trials), np.array(labels)
 
 # Extract trials and labels
+data = pd.read_csv(file_path)
 trials, labels = extract_trials(data, num_trials, trial_duration_samples, total_samples_per_trial)
 labels = labels - 1
 
@@ -328,14 +483,6 @@ scaler = StandardScaler()
 trials_reshaped = trials_transformed.reshape(-1, trials_transformed.shape[-1])
 trials_normalized = scaler.fit_transform(trials_reshaped).reshape(trials_transformed.shape)
 
-# Split into training, validation, and testing sets
-X_train, X_temp, y_train, y_temp = train_test_split(trials_normalized, labels, test_size=0.5, random_state=42, stratify=labels)
-X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp)
-
-# Save X_test and y_test for testing
-np.save('X_test.npy', X_test)
-np.save('y_test.npy', y_test)
-
 # Custom Dataset class
 class EEGEMGTransformedDataset(Dataset):
     def __init__(self, trials, labels, augment=False):
@@ -360,70 +507,77 @@ def create_dataloader(trials, labels, batch_size=15, shuffle=True, augment=False
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
     return dataloader
 
-# Create DataLoaders
-train_loader = create_dataloader(X_train, y_train, augment=True)
-val_loader = create_dataloader(X_val, y_val, shuffle=False)
-test_loader = create_dataloader(X_test, y_test, shuffle=False)
-
 # Define model, loss, optimizer
 input_channels = trials_transformed.shape[1]
-simple_model = SimpleAMPCNet(num_classes=2, input_channels=input_channels, target_shape=target_shape)
+num_classes = 2
+simple_model = SimpleAMPCNet(num_classes=num_classes, input_channels=input_channels, target_shape=target_shape)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(simple_model.parameters(), lr=0.0007)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
-# Training loop with detailed debugging
-num_epochs = 20
-for epoch in range(num_epochs):
-    simple_model.train()  # Set the model to training mode
-    running_loss = 0.0
+# Training loop with cross-validation
+def train_and_evaluate_model(train_loader, val_loader, model, criterion, optimizer, scheduler, num_epochs=20):
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
 
-    for i, (inputs, labels) in enumerate(train_loader):
-        optimizer.zero_grad()  # Zero the gradients
+        for i, (inputs, labels) in enumerate(train_loader):
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            running_loss += loss.item()
 
-        outputs = simple_model(inputs)  # Forward pass
-        loss = criterion(outputs, labels)  # Compute the loss
-        print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], Loss: {loss.item()}')
+        scheduler.step()
 
-        loss.backward()  # Backward pass
+        model.eval()
+        val_loss = 0.0
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
 
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(simple_model.parameters(), max_norm=1.0)
+        print(f'Epoch [{epoch+1}/{num_epochs}], '
+              f'Train Loss: {running_loss/len(train_loader):.4f}, '
+              f'Val Loss: {val_loss/len(val_loader):.4f}, '
+              f'Val Accuracy: {100 * correct / total:.2f}%')
 
-        # Print gradients for each parameter
-        for name, param in simple_model.named_parameters():
-            if param.grad is not None:
-                print(f'{name} grad: {param.grad.norm()}')
-                print(f'{name} value: {param.data.norm()}')
-                if param.grad.norm().item() == 0:
-                    print(f'Warning: {name} has zero gradient at step {i}')
+# Stratified K-Fold Cross-Validation
+skf = StratifiedKFold(n_splits=n_splits)
+fold = 1
+for train_index, val_index in skf.split(trials_normalized, labels):
+    print(f'Fold {fold}/{n_splits}')
+    X_train, X_val = trials_normalized[train_index], trials_normalized[val_index]
+    y_train, y_val = labels[train_index], labels[val_index]
 
-        optimizer.step()  # Optimizer step
+    # Ensure balanced training data
+    class_0_indices = np.where(y_train == 0)[0]
+    class_1_indices = np.where(y_train == 1)[0]
+    balanced_indices = np.hstack([class_0_indices, np.random.choice(class_1_indices, len(class_0_indices), replace=False)])
+    np.random.shuffle(balanced_indices)
 
-        running_loss += loss.item()  # Accumulate the running loss
+    X_train_balanced = X_train[balanced_indices]
+    y_train_balanced = y_train[balanced_indices]
 
-    scheduler.step()  # Adjust the learning rate if using a scheduler
+    # Create DataLoaders
+    train_loader = create_dataloader(X_train_balanced, y_train_balanced, augment=True)
+    val_loader = create_dataloader(X_val, y_val, shuffle=False)
 
-    # Validation
-    simple_model.eval()  # Set the model to evaluation mode
-    val_loss = 0.0
-    correct = 0
-    total = 0
+    # Train and evaluate the model
+    simple_model = SimpleAMPCNet(num_classes=num_classes, input_channels=input_channels, target_shape=target_shape)
+    optimizer = optim.Adam(simple_model.parameters(), lr=0.0007)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    train_and_evaluate_model(train_loader, val_loader, simple_model, criterion, optimizer, scheduler)
 
-    with torch.no_grad():  # Disable gradient computation for validation
-        for inputs, labels in val_loader:
-            outputs = simple_model(inputs)  # Forward pass
-            loss = criterion(outputs, labels)  # Compute the loss
-            val_loss += loss.item()  # Accumulate the validation loss
-
-            _, predicted = torch.max(outputs.data, 1)  # Get the predicted class
-            total += labels.size(0)  # Update the total number of samples
-            correct += (predicted == labels).sum().item()  # Update the number of correct predictions
-
-    print(f'Epoch [{epoch+1}/{num_epochs}], '
-          f'Train Loss: {running_loss/len(train_loader):.4f}, '
-          f'Val Loss: {val_loss/len(val_loader):.4f}, '
-          f'Val Accuracy: {100 * correct / total:.2f}%')
+    fold += 1
 
 # Save the model
 torch.save(simple_model.state_dict(), 'simple_model.pth')
