@@ -1,10 +1,8 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import StratifiedKFold
-from sklearn.model_selection import train_test_split
-from scipy.signal import butter, sosfilt, stft
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from scipy.signal import butter, sosfilt, stft, iirnotch, filtfilt
 import pywt
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -12,6 +10,8 @@ import torch.nn as nn
 import torch.optim as optim
 from PyEMD import EMD
 from scipy.signal import hilbert
+import matplotlib.pyplot as plt
+
 
 def compute_hht(data):
     emd = EMD()
@@ -257,6 +257,16 @@ def apply_bandpass_filter(data, lowcut, highcut, fs, order=5):
     filtered_data = sosfilt(sos, data, axis=0)
     return filtered_data
 
+def notch_filter(data, notch_freq, fs, quality_factor=30):
+    b, a = iirnotch(notch_freq, quality_factor, fs)
+    filtered_data = filtfilt(b, a, data, axis=0)
+    return filtered_data
+
+notch_freq = 50
+fs = 250
+
+
+
 def add_noise(data, noise_level=0.01):
     noise = np.random.randn(*data.shape) * noise_level
     return data + noise
@@ -474,14 +484,19 @@ cwt_shape = compute_cwt(sample_channel).shape
 
 target_shape = (max(stft_shape[0], cwt_shape[0]), max(stft_shape[1], cwt_shape[1]))
 
+#apply notch filter
+notch_filtered_data = notch_filter(data, notch_freq, fs)
+
 # Apply transformations
 transform_funcs = [compute_stft, compute_cwt]
 trials_transformed = apply_transforms(trials_filtered, transform_funcs, target_shape)
+
 
 # Normalize the data
 scaler = StandardScaler()
 trials_reshaped = trials_transformed.reshape(-1, trials_transformed.shape[-1])
 trials_normalized = scaler.fit_transform(trials_reshaped).reshape(trials_transformed.shape)
+
 
 # Custom Dataset class
 class EEGEMGTransformedDataset(Dataset):
@@ -516,7 +531,7 @@ optimizer = optim.Adam(simple_model.parameters(), lr=0.0007)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
 # Training loop with cross-validation
-def train_and_evaluate_model(train_loader, val_loader, model, criterion, optimizer, scheduler, num_epochs=20):
+def train_and_evaluate_model(train_loader, val_loader, model, criterion, optimizer, scheduler, num_epochs=30):
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
