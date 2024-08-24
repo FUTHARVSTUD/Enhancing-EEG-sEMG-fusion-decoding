@@ -2,12 +2,13 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import StratifiedKFold
-from scipy.signal import butter, sosfilt, stft
-import pywt
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 import torch.optim as optim
+from scipy.signal import butter, sosfilt, stft, cwt, ricker
+import pywt
+from scipy.signal import hilbert
 from sklearn.decomposition import PCA
 
 # Define the notch filter
@@ -22,6 +23,27 @@ def apply_notch_filter(data, center_freq, fs, quality_factor=30.0):
     sos = butter_notch(center_freq, fs, quality_factor)
     filtered_data = sosfilt(sos, data, axis=0)
     return filtered_data
+
+def butter_bandpass(lowcut, highcut, fs, order=4):
+    nyquist = 0.5 * fs
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    sos = butter(order, [low, high], btype='bandpass', output='sos')
+    return sos
+
+def apply_bandpass_filter(data, lowcut, highcut, fs):
+    sos = butter_bandpass(lowcut, highcut, fs)
+    filtered_data = sosfilt(sos, data, axis=0)
+    return filtered_data
+
+def compute_stft(data):
+    f, t, Zxx = stft(data, fs=250, nperseg=128, noverlap=64)
+    return np.abs(Zxx)
+
+def compute_cwt(data):
+    scales = np.arange(1, 31)
+    coeffs, freqs = pywt.cwt(data, scales, wavelet='morl')
+    return np.abs(coeffs)
 
 def compute_hht(data):
     emd = EMD()
@@ -181,69 +203,58 @@ class SimpleAMPCNet(nn.Module):
             nn.MaxPool2d((2, 2))
         )
 
-        # HHT convolutional block (optional based on your data)
+        # HHT convolutional block (optional based on HHT features)
         self.hht_conv = nn.Sequential(
-            nn.Conv2d(input_channels, 4, kernel_size=(1, 1), padding=(0, 0)),  
-            nn.ReLU(),
-            nn.MaxPool2d((1, 2))
+            nn.Conv2d(input_channels, 4, kernel_size=(1, 1)),  # Adjusted for HHT
+            nn.ReLU()
         )
 
-        # Calculate flatten size using dummy input
-        dummy_input = torch.randn(1, input_channels, target_shape[0], target_shape[1])
-        with torch.no_grad():
-            self.flatten_size = self._get_flatten_size(dummy_input)
-
-        # Classifier
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(self.flatten_size, 32),  # Reduced size
+        # Fully connected layers
+        self.fc = nn.Sequential(
+            nn.Linear(target_shape[0] * target_shape[1] * 12, 128),  # Adjusted for concatenated features
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(32, num_classes)
+            nn.Linear(128, num_classes)
         )
 
-        # Initialize weights
-        self._initialize_weights()
-
-    def _get_flatten_size(self, x):
-        x_time = self.time_conv(x)
-        x_freq = self.freq_conv(x)
-        x_tf = self.tf_conv(x)
-        x_hht = self.hht_conv(x)  # Apply HHT convolution
-        x_time_flat = x_time.view(x_time.size(0), -1)
-        x_freq_flat = x_freq.view(x_freq.size(0), -1)
-        x_tf_flat = x_tf.view(x_tf.size(0), -1)
-        x_hht_flat = x_hht.view(x_hht.size(0), -1)  # Flatten HHT output
-        return x_time_flat.shape[1] + x_freq_flat.shape[1] + x_tf_flat.shape[1] + x_hht_flat.shape[1]
-
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
     def forward(self, x):
-        x_time = self.time_conv(x)
-        x_freq = self.freq_conv(x)
-        x_tf = self.tf_conv(x)
-        x_hht = self.hht_conv(x)
-        x_time_flat = x_time.view(x_time.size(0), -1)
-        x_freq_flat = x_freq.view(x_freq.size(0), -1)
-        x_tf_flat = x_tf.view(x_tf.size(0), -1)
-        x_hht_flat = x_hht.view(x_hht.size(0), -1)
-        concat_features = torch.cat([x_time_flat, x_freq_flat, x_tf_flat, x_hht_flat], dim=1)
-        out = self.classifier(concat_features)
+        time_features = self.time_conv(x)
+        freq_features = self.freq_conv(x)
+        tf_features = self.tf_conv(x)
+        hht_features = self.hht_conv(x)
+
+        # Flatten and concatenate features
+        time_features = time_features.view(time_features.size(0), -1)
+        freq_features = freq_features.view(freq_features.size(0), -1)
+        tf_features = tf_features.view(tf_features.size(0), -1)
+        hht_features = hht_features.view(hht_features.size(0), -1)
+
+        concatenated_features = torch.cat((time_features, freq_features, tf_features, hht_features), dim=1)
+
+        # Fully connected layers
+        out = self.fc(concatenated_features)
         return out
-    
-def compute_stft(data, fs=250, nperseg=128, noverlap=64):
-    f, t, Zxx = stft(data, fs=fs, nperseg=nperseg, noverlap=noverlap)
-    return np.abs(Zxx)
 
-def compute_cwt(data, wavelet='morl', scales=np.arange(1, 31)):
-    coeffs, freqs = pywt.cwt(data, scales, wavelet)
-    return np.abs(coeffs)
+class EEGEMGTransformedDataset(Dataset):
+    def __init__(self, trials, labels, augment=False):
+        self.trials = trials
+        self.labels = labels
+        self.augment = augment
 
+    def __len__(self):
+        return len(self.trials)
+
+    def __getitem__(self, idx):
+        trial = self.trials[idx]
+        label = self.labels[idx]
+        if self.augment:
+            trial = augment(trial)
+        return torch.tensor(trial, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
+
+def create_dataloader(trials, labels, batch_size=9, shuffle=True, augment=False):
+    dataset = EEGEMGTransformedDataset(trials, labels, augment=augment)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    return dataloader
 def apply_transforms(trials, transform_funcs, target_shape, pca_components=None):
     transformed_trials = []
     for trial in trials:
@@ -277,145 +288,64 @@ def apply_transforms(trials, transform_funcs, target_shape, pca_components=None)
 
     return np.array(transformed_trials)
 
-def butter_bandpass(lowcut, highcut, fs, order=5):
-    nyquist = 0.5 * fs
-    low = lowcut / nyquist
-    high = highcut / nyquist
-    sos = butter(order, [low, high], analog=False, btype='band', output='sos')
-    return sos
+def preprocess_data(file_path, num_trials, trial_duration_samples, total_samples_per_trial, sampling_rate):
+    data = pd.read_csv(file_path)
 
-def apply_bandpass_filter(data, lowcut, highcut, fs, order=5):
-    sos = butter_bandpass(lowcut, highcut, fs, order=order)
-    filtered_data = sosfilt(sos, data, axis=0)
-    return filtered_data
+    eeg_columns = ['Fz', 'C3', 'Cz', 'C4', 'Pz', 'PO7', 'Oz', 'PO8']
+    emg_columns = ['EMG_Right', 'EMG_Left']
 
-def add_noise(data, noise_level=0.01):
-    noise = np.random.randn(*data.shape) * noise_level
-    return data + noise
+    eeg_trials, labels = extract_trials(data[eeg_columns + ['Trigger', 'Label', 'Planning']], num_trials, trial_duration_samples, total_samples_per_trial)
+    emg_trials, _ = extract_trials(data[emg_columns + ['Trigger', 'Label', 'Planning']], num_trials, trial_duration_samples, total_samples_per_trial)
 
-def time_shift(data, shift_max=50):
-    shift = np.random.randint(-shift_max, shift_max)
-    return np.roll(data, shift, axis=0)
+    # Apply notch filter before the bandpass filter
+    notch_center_freq = 50.0  # Powerline frequency to be removed
+    quality_factor = 30.0
+    eeg_trials_notch_filtered = np.array([apply_notch_filter(trial, notch_center_freq, sampling_rate, quality_factor) for trial in eeg_trials])
+    emg_trials_notch_filtered = np.array([apply_notch_filter(trial, notch_center_freq, sampling_rate, quality_factor) for trial in emg_trials])
 
-def scale(data, scale_min=0.8, scale_max=1.2):
-    factor = np.random.uniform(scale_min, scale_max)
-    return data * factor
+    # Apply bandpass filter
+    lowcut = 27.0
+    highcut = 90.0
+    eeg_trials_filtered = np.array([apply_bandpass_filter(trial, lowcut, highcut, sampling_rate) for trial in eeg_trials_notch_filtered])
+    emg_trials_filtered = np.array([apply_bandpass_filter(trial, lowcut, highcut, sampling_rate) for trial in emg_trials_notch_filtered])
 
-def augment(data):
-    data = add_noise(data)
-    data = time_shift(data)
-    data = scale(data)
-    return data
+    sample_channel = eeg_trials_filtered[0, :, 0]
+    stft_shape = compute_stft(sample_channel).shape
+    cwt_shape = compute_cwt(sample_channel).shape
 
-file_path = 'P36_EEG_OpenBCIEMG_IMUADS1220_EEG_EMG250Hz1.csv'
-sampling_rate = 250  
-trial_duration_sec = 8  
-break_duration_sec = 3  
-num_trials = 40
-n_splits = 5  
+    target_shape = (max(stft_shape[0], cwt_shape[0]), max(stft_shape[1], cwt_shape[1]))
 
-trial_duration_samples = trial_duration_sec * sampling_rate
-break_duration_samples = break_duration_sec * sampling_rate
-total_samples_per_trial = trial_duration_samples + break_duration_samples
+    transform_funcs = [compute_stft, compute_cwt]
+    pca_components = 20
+    eeg_trials_transformed = apply_transforms(eeg_trials_filtered, transform_funcs, target_shape, pca_components=pca_components)
+    emg_trials_transformed = apply_transforms(emg_trials_filtered, transform_funcs, target_shape, pca_components=pca_components)
 
-def extract_trials(data, num_trials, trial_duration_samples, total_samples_per_trial):
-    trials = []
-    labels = []
-    planning_duration_samples = 2 * sampling_rate  # 3rd to 5th second
+    scaler = StandardScaler()
 
-    start_index = data[(data['Trigger'] == 1)].index[0]  
-    for i in range(num_trials):
-        trial_start = start_index + i * total_samples_per_trial
-        trial_end = trial_start + trial_duration_samples
-        trial_data = data.iloc[trial_start:trial_end]
+    eeg_trials_normalized = []
+    emg_trials_normalized = []
 
-        # Filter data where Planning is 1 (3rd to 5th second)
-        planning_data = trial_data[trial_data['Planning'] == 1]
-        planning_start = planning_data.index[0]
-        planning_end = planning_start + planning_duration_samples
-        planning_data = trial_data.loc[planning_start:planning_end]
+    for trial in eeg_trials_transformed:
+        n_channels, n_freq_bins, n_time_steps = trial.shape
+        trial_reshaped = trial.reshape(n_channels, -1).T
+        trial_normalized = scaler.fit_transform(trial_reshaped).T  # Transpose back to original shape (n_channels, n_samples)
+        trial_normalized = trial_normalized.reshape(n_channels, n_freq_bins, n_time_steps)  # Reshape back to original shape
+        eeg_trials_normalized.append(trial_normalized)
 
-        trials.append(planning_data.iloc[:, 4:].values)  # Exclude first 4 columns (Time, Trigger, Label, Planning)
-        labels.append(trial_data['Label'].values[0])  
+    for trial in emg_trials_transformed:
+        n_channels, n_freq_bins, n_time_steps = trial.shape
+        trial_reshaped = trial.reshape(n_channels, -1).T
+        trial_normalized = scaler.fit_transform(trial_reshaped).T  # Transpose back to original shape (n_channels, n_samples)
+        trial_normalized = trial_normalized.reshape(n_channels, n_freq_bins, n_time_steps)  # Reshape back to original shape
+        emg_trials_normalized.append(trial_normalized)
 
-    return np.array(trials), np.array(labels)
+    eeg_trials_normalized = np.array(eeg_trials_normalized)
+    emg_trials_normalized = np.array(emg_trials_normalized)
 
-data = pd.read_csv(file_path)
-trials, labels = extract_trials(data, num_trials, trial_duration_samples, total_samples_per_trial)
-labels = labels - 1
+    # Fuse EEG and sEMG data
+    fused_trials = np.concatenate((eeg_trials_normalized, emg_trials_normalized), axis=1)
 
-# Apply notch filter before the bandpass filter
-notch_center_freq = 50.0  # Powerline frequency to be removed
-quality_factor = 30.0
-trials_notch_filtered = np.array([apply_notch_filter(trial, notch_center_freq, sampling_rate, quality_factor) for trial in trials])
-
-# Apply bandpass filter
-lowcut = 27.0
-highcut = 90.0
-trials_filtered = np.array([apply_bandpass_filter(trial, lowcut, highcut, sampling_rate) for trial in trials_notch_filtered])
-
-sample_channel = trials_filtered[0, :, 0]
-stft_shape = compute_stft(sample_channel).shape
-cwt_shape = compute_cwt(sample_channel).shape
-
-target_shape = (max(stft_shape[0], cwt_shape[0]), max(stft_shape[1], cwt_shape[1]))
-
-transform_funcs = [compute_stft, compute_cwt]
-pca_components = 20
-trials_transformed = apply_transforms(trials_filtered, transform_funcs, target_shape, pca_components=pca_components)
-
-# Standardize EEG/sEMG data
-scaler = StandardScaler()
-trials_reshaped = trials_transformed.reshape(-1, trials_transformed.shape[-1])
-trials_normalized = []
-for trial in trials_transformed:
-    n_channels, n_freq_bins, n_time_steps = trial.shape
-    trial_reshaped = trial.reshape(n_channels, -1).T
-    trial_normalized = scaler.fit_transform(trial_reshaped).T  # Transpose back to original shape (n_channels, n_samples)
-    trial_normalized = trial_normalized.reshape(n_channels, n_freq_bins, n_time_steps)  # Reshape back to original shape
-
-    trials_normalized.append(trial_normalized)
-
-trials_normalized = np.array(trials_normalized)
-
-
-# Load and process IMU data
-imu_columns = ['IMU_w', 'IMU_x', 'IMU_y', 'IMU_z']
-imu_data = data[imu_columns].values
-imu_trials, _ = extract_trials(data[imu_columns], num_trials, trial_duration_samples, total_samples_per_trial)
-
-# Standardize IMU data
-imu_scaler = StandardScaler()
-imu_trials_normalized = imu_scaler.fit_transform(imu_trials.reshape(-1, imu_trials.shape[-1])).reshape(imu_trials.shape)
-
-# Concatenate EEG/sEMG features with IMU data along the feature axis
-fused_trials = np.concatenate((trials_normalized, imu_trials_normalized), axis=1)
-
-class EEGEMGIMUDataset(Dataset):
-    def __init__(self, trials, labels, augment=False):
-        self.trials = trials
-        self.labels = labels
-        self.augment = augment
-
-    def __len__(self):
-        return len(self.trials)
-
-    def __getitem__(self, idx):
-        trial = self.trials[idx]
-        label = self.labels[idx]
-        if self.augment:
-            trial = augment(trial)
-        return torch.tensor(trial, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
-
-def create_dataloader(trials, labels, batch_size=9, shuffle=True, augment=False):
-    dataset = EEGEMGIMUDataset(trials, labels, augment=augment)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-    return dataloader
-
-input_channels = fused_trials.shape[1]
-num_classes = 2
-simple_model = SimpleAMPCNet(num_classes=num_classes, input_channels=input_channels, target_shape=target_shape)
-criterion = nn.CrossEntropyLoss()
+    return fused_trials, labels, target_shape
 
 def train_and_evaluate_model(train_loader, val_loader, model, criterion, optimizer, scheduler, num_epochs=200):
     for epoch in range(num_epochs):
@@ -450,12 +380,49 @@ def train_and_evaluate_model(train_loader, val_loader, model, criterion, optimiz
               f'Train Loss: {running_loss/len(train_loader):.4f}, '
               f'Val Loss: {val_loss/len(val_loader):.4f}, '
               f'Val Accuracy: {100 * correct / total:.2f}%')
+def extract_trials(data, num_trials, trial_duration_samples, total_samples_per_trial):
+    trials = []
+    labels = []
 
+    for i in range(num_trials):
+        # Assuming 'Trigger' column marks the start of each trial
+        start_idx = data[data['Trigger'] == i].index[0]
+        
+        # Define the end of the trial
+        end_idx = start_idx + trial_duration_samples
+        
+        if end_idx < len(data):
+            trial_data = data.iloc[start_idx:end_idx].values
+            trial_label = data.iloc[start_idx]['Label']
+            trials.append(trial_data)
+            labels.append(trial_label)
+    
+    # Convert lists to numpy arrays
+    trials = np.array(trials)
+    labels = np.array(labels)
+    
+    return trials, labels
+# Load and preprocess data
+file_path = 'P36_EEG_OpenBCIEMG_IMUADS1220_EEG_EMG250Hz1.csv'  # Replace with your data file path
+data = pd.read_csv(file_path)
+print(data.head())
+print(data.columns)
+print(data['Trigger'].unique())
+print(data['Label'].unique())
+num_trials = 40  # Number of trials
+trial_duration_samples = 2000  # Duration of each trial in samples
+total_samples_per_trial = 2750  # Total number of samples per trial
+sampling_rate = 250  # Sampling rate in Hz
+trials_normalized, labels, target_shape = preprocess_data(file_path, num_trials, trial_duration_samples, total_samples_per_trial, sampling_rate)
+
+
+# Cross-validation setup
+n_splits = 5
 skf = StratifiedKFold(n_splits=n_splits)
 fold = 1
-for train_index, val_index in skf.split(fused_trials, labels):
+for train_index, val_index in skf.split(trials_normalized, labels):
     print(f'Fold {fold}/{n_splits}')
-    X_train, X_val = fused_trials[train_index], fused_trials[val_index]
+    X_train, X_val = trials_normalized[train_index], trials_normalized[val_index]
     y_train, y_val = labels[train_index], labels[val_index]
     class_0_indices = np.where(y_train == 0)[0]
     class_1_indices = np.where(y_train == 1)[0]
@@ -467,10 +434,10 @@ for train_index, val_index in skf.split(fused_trials, labels):
     train_loader = create_dataloader(X_train_balanced, y_train_balanced, augment=True)
     val_loader = create_dataloader(X_val, y_val, shuffle=True)
 
-    simple_model = SimpleAMPCNet(num_classes=num_classes, input_channels=input_channels, target_shape=target_shape)
+    simple_model = SimpleAMPCNet(num_classes=2, input_channels=X_train.shape[1], target_shape=target_shape)
     optimizer = optim.Adam(simple_model.parameters(), lr=0.0007)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
-    train_and_evaluate_model(train_loader, val_loader, simple_model, criterion, optimizer, scheduler)
+    train_and_evaluate_model(train_loader, val_loader, simple_model, nn.CrossEntropyLoss(), optimizer, scheduler)
 
     fold += 1
 

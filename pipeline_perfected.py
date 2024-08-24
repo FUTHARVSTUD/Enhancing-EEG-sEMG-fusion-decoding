@@ -1,13 +1,15 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from scipy.signal import butter, sosfilt, stft
 import pywt
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 import torch.optim as optim
+from PyEMD import EMD
+from scipy.signal import hilbert
 from sklearn.decomposition import PCA
 
 # Define the notch filter
@@ -152,6 +154,80 @@ class TFConvBlock(nn.Module):
         x = self.psa(x)
         return x
 
+# class SimpleAMPCNet(nn.Module):
+#     def __init__(self, num_classes, input_channels, target_shape):
+#         super(SimpleAMPCNet, self).__init__()
+
+#         self.time_conv = nn.Sequential(
+#             nn.Conv2d(input_channels, 8, kernel_size=(1, 10), padding=(0, 5)),
+#             nn.ReLU(),
+#             nn.Conv2d(8, 8, kernel_size=(1, 3), padding=(0, 1)),
+#             nn.ReLU()
+#         )
+
+#         self.freq_conv = nn.Sequential(
+#             nn.Conv2d(input_channels, 8, kernel_size=(10, 1), stride=(2, 1), padding=(5, 0)),
+#             nn.ReLU()
+#         )
+
+#         self.tf_conv = nn.Sequential(
+#             nn.Conv2d(input_channels, 8, kernel_size=(5, 5), padding=(2, 2)),
+#             nn.ReLU(),
+#             nn.Conv2d(8, 8, kernel_size=(3, 3), padding=(1, 1)),
+#             nn.ReLU()
+#         )
+
+#         self.hht_conv = nn.Sequential(
+#             nn.Conv2d(input_channels, 8, kernel_size=(1, 1), padding=(0, 0)),  # Example, adjust according to HHT output
+#             nn.ReLU()
+#         )
+
+#         # Calculate flatten size using dummy input
+#         dummy_input = torch.randn(1, input_channels, target_shape[0], target_shape[1])
+#         with torch.no_grad():
+#             self.flatten_size = self._get_flatten_size(dummy_input)
+
+#         # Initialize the classifier
+#         self.classifier = nn.Sequential(
+#             nn.Flatten(),
+#             nn.Linear(self.flatten_size, 64),
+#             nn.ReLU(),
+#             nn.Linear(64, num_classes)
+#         )
+
+#         # Initialize weights
+#         self._initialize_weights()
+
+#     def _get_flatten_size(self, x):
+#         x_time = self.time_conv(x)
+#         x_freq = self.freq_conv(x)
+#         x_tf = self.tf_conv(x)
+#         x_hht = self.hht_conv(x)  # Add HHT output
+#         x_time_flat = x_time.view(x_time.size(0), -1)
+#         x_freq_flat = x_freq.view(x_freq.size(0), -1)
+#         x_tf_flat = x_tf.view(x_tf.size(0), -1)
+#         x_hht_flat = x_hht.view(x_hht.size(0), -1)  # Flatten HHT output
+#         return x_time_flat.shape[1] + x_freq_flat.shape[1] + x_tf_flat.shape[1] + x_hht_flat.shape[1]
+
+#     def _initialize_weights(self):
+#         for m in self.modules():
+#             if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+#                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+#                 if m.bias is not None:
+#                     nn.init.constant_(m.bias, 0)
+
+#     def forward(self, x):
+#         x_time = self.time_conv(x)
+#         x_freq = self.freq_conv(x)
+#         x_tf = self.tf_conv(x)
+#         x_hht = self.hht_conv(x)  # Apply HHT convolution
+#         x_time_flat = x_time.view(x_time.size(0), -1)
+#         x_freq_flat = x_freq.view(x_freq.size(0), -1)
+#         x_tf_flat = x_tf.view(x_tf.size(0), -1)
+#         x_hht_flat = x_hht.view(x_hht.size(0), -1)  # Flatten HHT output
+#         concat_features = torch.cat([x_time_flat, x_freq_flat, x_tf_flat, x_hht_flat], dim=1)
+#         out = self.classifier(concat_features)
+#         return out
 class SimpleAMPCNet(nn.Module):
     def __init__(self, num_classes, input_channels, target_shape):
         super(SimpleAMPCNet, self).__init__()
@@ -244,6 +320,21 @@ def compute_cwt(data, wavelet='morl', scales=np.arange(1, 31)):
     coeffs, freqs = pywt.cwt(data, scales, wavelet)
     return np.abs(coeffs)
 
+# def apply_transforms(trials, transform_funcs, target_shape):
+#     transformed_trials = []
+#     for trial in trials:
+#         trial_transformed = []
+#         for func in transform_funcs:
+#             if func == compute_hht:
+#                 transformed_data = [compute_hht(channel) for channel in trial.T]
+#             else:
+#                 transformed_data = [func(channel) for channel in trial.T]
+#             transformed_data = [np.pad(td, pad_width=((0, max(0, target_shape[0] - td.shape[0])), 
+#                                                       (0, max(0, target_shape[1] - td.shape[1]))), 
+#                                       mode='constant') for td in transformed_data]
+#             trial_transformed.append(np.stack(transformed_data, axis=0))
+#         transformed_trials.append(np.concatenate(trial_transformed, axis=0))
+#     return np.array(transformed_trials)
 def apply_transforms(trials, transform_funcs, target_shape, pca_components=None):
     transformed_trials = []
     for trial in trials:
@@ -364,7 +455,15 @@ transform_funcs = [compute_stft, compute_cwt]
 pca_components = 20
 trials_transformed = apply_transforms(trials_filtered, transform_funcs, target_shape, pca_components=pca_components)
 
-# Standardize EEG/sEMG data
+imu_columns = ['IMU_w', 'IMU_x', 'IMU_y', 'IMU_z']
+imu_data = data[imu_columns].values
+imu_trials, _ = extract_trials(data[imu_columns], num_trials, trial_duration_samples, total_samples_per_trial)
+
+# Standardize IMU data
+imu_scaler = StandardScaler()
+imu_trials_normalized = imu_scaler.fit_transform(imu_trials.reshape(-1, imu_trials.shape[-1])).reshape(imu_trials.shape)
+
+
 scaler = StandardScaler()
 trials_reshaped = trials_transformed.reshape(-1, trials_transformed.shape[-1])
 trials_normalized = []
@@ -377,21 +476,9 @@ for trial in trials_transformed:
     trials_normalized.append(trial_normalized)
 
 trials_normalized = np.array(trials_normalized)
-
-
-# Load and process IMU data
-imu_columns = ['IMU_w', 'IMU_x', 'IMU_y', 'IMU_z']
-imu_data = data[imu_columns].values
-imu_trials, _ = extract_trials(data[imu_columns], num_trials, trial_duration_samples, total_samples_per_trial)
-
-# Standardize IMU data
-imu_scaler = StandardScaler()
-imu_trials_normalized = imu_scaler.fit_transform(imu_trials.reshape(-1, imu_trials.shape[-1])).reshape(imu_trials.shape)
-
-# Concatenate EEG/sEMG features with IMU data along the feature axis
 fused_trials = np.concatenate((trials_normalized, imu_trials_normalized), axis=1)
-
-class EEGEMGIMUDataset(Dataset):
+print(fused_trials)
+class EEGEMGTransformedDataset(Dataset):
     def __init__(self, trials, labels, augment=False):
         self.trials = trials
         self.labels = labels
@@ -408,11 +495,11 @@ class EEGEMGIMUDataset(Dataset):
         return torch.tensor(trial, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
 
 def create_dataloader(trials, labels, batch_size=9, shuffle=True, augment=False):
-    dataset = EEGEMGIMUDataset(trials, labels, augment=augment)
+    dataset = EEGEMGTransformedDataset(trials, labels, augment=augment)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
     return dataloader
 
-input_channels = fused_trials.shape[1]
+input_channels = trials_transformed.shape[1]
 num_classes = 2
 simple_model = SimpleAMPCNet(num_classes=num_classes, input_channels=input_channels, target_shape=target_shape)
 criterion = nn.CrossEntropyLoss()
@@ -453,9 +540,9 @@ def train_and_evaluate_model(train_loader, val_loader, model, criterion, optimiz
 
 skf = StratifiedKFold(n_splits=n_splits)
 fold = 1
-for train_index, val_index in skf.split(fused_trials, labels):
+for train_index, val_index in skf.split(trials_normalized, labels):
     print(f'Fold {fold}/{n_splits}')
-    X_train, X_val = fused_trials[train_index], fused_trials[val_index]
+    X_train, X_val = trials_normalized[train_index], trials_normalized[val_index]
     y_train, y_val = labels[train_index], labels[val_index]
     class_0_indices = np.where(y_train == 0)[0]
     class_1_indices = np.where(y_train == 1)[0]
