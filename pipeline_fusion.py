@@ -277,6 +277,7 @@ def augment(data):
 
 # Data extraction function
 def extract_trials(data, num_trials, trial_duration_samples, total_samples_per_trial, eeg_channels, semg_channels):
+    sampling_rate = 250
     trials_eeg = []
     trials_semg = []
     labels = []
@@ -300,10 +301,19 @@ def extract_trials(data, num_trials, trial_duration_samples, total_samples_per_t
         planning_start = planning_data.index[0]
         planning_end = planning_start + planning_duration_samples
         planning_data = trial_data.loc[planning_start:planning_end]
+        print("Shape of trial_data:", trial_data.shape)
+        print("EEG Channels:", eeg_channels)
+        print("sEMG Channels:", semg_channels)
+
 
         # Separate EEG and sEMG channels
         eeg_data = trial_data.iloc[:, eeg_channels].values  
         semg_data = trial_data.iloc[:, semg_channels].values  
+        print("EEG Channels:", eeg_channels)
+        print("sEMG Channels:", semg_channels)
+        print("Columns in trial_data:", trial_data.columns)
+
+
 
         trials_eeg.append(planning_data.iloc[:, eeg_channels].values)
         trials_semg.append(planning_data.iloc[:, semg_channels].values)
